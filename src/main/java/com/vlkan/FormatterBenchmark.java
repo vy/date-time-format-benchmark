@@ -67,16 +67,7 @@ public class FormatterBenchmark {
      * Date & time format patterns supported by all formatters and produce the same output.
      */
     @Param({
-            "HH:mm:ss,SSS",
             "HH:mm:ss.SSS",
-            "yyyyMMddHHmmssSSS",
-            "dd MMM yyyy HH:mm:ss,SSS",
-            "dd MMM yyyy HH:mm:ss.SSS",
-            "yyyy-MM-dd HH:mm:ss,SSS",
-            "yyyy-MM-dd HH:mm:ss.SSS",
-            "yyyyMMdd'T'HHmmss,SSS",
-            "yyyyMMdd'T'HHmmss.SSS",
-            "yyyy-MM-dd'T'HH:mm:ss,SSS",
             "yyyy-MM-dd'T'HH:mm:ss.SSS"
     })
     public String pattern;
