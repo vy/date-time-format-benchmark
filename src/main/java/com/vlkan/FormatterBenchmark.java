@@ -40,7 +40,7 @@ public class FormatterBenchmark {
      */
     private static final Locale LOCALE = Locale.US;
 
-    private static final int INSTANT_COUNT = 1_000;
+    private static final Instant[] INSTANTS = createInstants();
 
     /**
      * Date & time format patterns supported by all formatters and produce the same output.
@@ -51,12 +51,6 @@ public class FormatterBenchmark {
     })
     public String pattern;
 
-    @Param({
-            "shuffled",     // raw speed
-            "monoincr"      // to exploit implicit caching
-    })
-    public String timeFlow;
-
     private Formatter log4jFdf;
 
     private Formatter commonsFdf;
@@ -66,49 +60,24 @@ public class FormatterBenchmark {
     @Setup
     public void setupFormatters(final BenchmarkParams params) {
         final String pattern = params.getParam("pattern");
-        final String timeFlow = params.getParam("timeFlow");
-        final Instant[] instants = createInstants(timeFlow);
-        log4jFdf = new Log4jFixedDateFormat(instants, pattern);
-        commonsFdf = new CommonsFastDateFormat(instants, pattern);
-        javaDtf = new JavaDateTimeFormatter(instants, pattern);
+        log4jFdf = new Log4jFixedDateFormat(pattern);
+        commonsFdf = new CommonsFastDateFormat(pattern);
+        javaDtf = new JavaDateTimeFormatter(pattern);
     }
 
-    private static Instant[] createInstants(final String timeFlow) {
-        if ("shuffled".equalsIgnoreCase(timeFlow)) {
-            return createShuffledInstants();
-        } else if ("monoincr".equalsIgnoreCase(timeFlow)) {
-            return createMonotonicallyIncreasingInstants();
-        }
-        throw new IllegalArgumentException("unknown instant collection pattern: " + timeFlow);
-    }
-
-    private static Instant[] createShuffledInstants() {
+    private static Instant[] createInstants() {
         final Instant loInstant = Instant.EPOCH;
-        final Instant hiInstant = loInstant.plus(Duration.ofDays(1));           // This is necessary to avoid choking at `FixedDateTime#millisSinceMidnight(long)`, which is supposed to be executed once a day in practice.
+        // Capping the max. offset to a day to avoid choking at `FixedDateTime#millisSinceMidnight(long)`, which is supposed to be executed once a day in practice.
+        final Instant hiInstant = loInstant.plus(Duration.ofDays(1));
         final long maxOffsetNanos = Duration.between(loInstant, hiInstant).toNanos();
         final Random random = new Random(0);
         return IntStream
-                .range(0, INSTANT_COUNT)
+                .range(0, 1_000)
                 .mapToObj(ignored -> {
                     final long offsetNanos = (long) Math.floor(random.nextDouble() * maxOffsetNanos);
                     return loInstant.plus(offsetNanos, ChronoUnit.NANOS);
                 })
                 .toArray(Instant[]::new);
-    }
-
-    private static Instant[] createMonotonicallyIncreasingInstants() {
-        Random random = new Random(0);
-        Instant[] instants = new Instant[INSTANT_COUNT];
-        instants[0] = Instant.EPOCH;
-        for (int instantIndex = 1; instantIndex < INSTANT_COUNT; instantIndex++) {
-            boolean repeating = random.nextDouble() < 0.3D;                     // 30% of the instants supposed to be repeating.
-            long offsetNanos = !repeating
-                    ? ((long) Math.floor(random.nextDouble() * 1e9))            // Max. 1 seconds between adjacent and distinct instants.
-                                                                                // This is necessary to avoid choking at `FixedDateTime#millisSinceMidnight(long)`, which is supposed to be executed once a day in practice.
-                    : 0;
-            instants[instantIndex] = instants[instantIndex - 1].plus(offsetNanos, ChronoUnit.NANOS);
-        }
-        return instants;
     }
 
     @FunctionalInterface
@@ -126,9 +95,9 @@ public class FormatterBenchmark {
 
         private final FixedDateFormat formatter;
 
-        private Log4jFixedDateFormat(final Instant[] instants, final String pattern) {
+        private Log4jFixedDateFormat(final String pattern) {
             this.log4jInstants = Stream
-                    .of(instants)
+                    .of(INSTANTS)
                     .map(instant -> {
                         final MutableInstant log4jInstant = new MutableInstant();
                         log4jInstant.initFromEpochSecond(instant.getEpochSecond(), instant.getNano());
@@ -156,9 +125,9 @@ public class FormatterBenchmark {
 
         private final FastDateFormat fastDateFormat;
 
-        private CommonsFastDateFormat(final Instant[] instants, final String pattern) {
+        private CommonsFastDateFormat(final String pattern) {
             this.calendars = Arrays
-                    .stream(instants)
+                    .stream(INSTANTS)
                     .map(instant -> {
                         final Calendar calendar = Calendar.getInstance(TIME_ZONE, LOCALE);
                         calendar.setTimeInMillis(instant.toEpochMilli());
@@ -187,8 +156,8 @@ public class FormatterBenchmark {
 
         private final DateTimeFormatter dateTimeFormatter;
 
-        private JavaDateTimeFormatter(final Instant[] instants, final String pattern) {
-            this.instants = instants;
+        private JavaDateTimeFormatter(final String pattern) {
+            this.instants = INSTANTS;
             this.dateTimeFormatter = DateTimeFormatter
                     .ofPattern(pattern, LOCALE)
                     .withZone(TIME_ZONE.toZoneId());
