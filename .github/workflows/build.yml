@@ -62,4 +62,4 @@ jobs:
         run: |
           java \
             -jar target/date-time-format-benchmark.jar \
-            -wi 3 -w 10s -i 4 -r 10s -prof gc
+            -f 3 -wi 3 -w 10s -i 4 -r 10s -prof gc
