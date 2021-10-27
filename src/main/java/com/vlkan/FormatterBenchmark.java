@@ -15,53 +15,32 @@
  */
 package com.vlkan;
 
+import org.apache.logging.log4j.core.time.MutableInstant;
+import org.apache.logging.log4j.core.util.datetime.FastDateFormat;
 import org.apache.logging.log4j.core.util.datetime.FixedDateFormat;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.BenchmarkParams;
 import org.openjdk.jmh.infra.Blackhole;
-import org.openjdk.jmh.runner.Runner;
-import org.openjdk.jmh.runner.RunnerException;
-import org.openjdk.jmh.runner.options.ChainedOptionsBuilder;
-import org.openjdk.jmh.runner.options.Options;
-import org.openjdk.jmh.runner.options.OptionsBuilder;
-import org.openjdk.jmh.runner.options.TimeValue;
 
-import java.io.File;
-import java.net.URL;
-import java.net.URLClassLoader;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
-import java.util.Locale;
-import java.util.Random;
-import java.util.TimeZone;
+import java.util.*;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 @State(Scope.Thread)
 public class FormatterBenchmark {
 
-    static final TimeZone TIME_ZONE = TimeZone.getTimeZone("UTC");
+    private static final TimeZone TIME_ZONE = TimeZone.getTimeZone("UTC");
 
     /**
      * Does (should?) have no effect, since {@link #pattern}s must be supported by {@link FixedDateFormat}, which doesn't have any locale support.
      */
-    static final Locale LOCALE = Locale.US;
+    private static final Locale LOCALE = Locale.US;
 
-    static final Instant[] INSTANTS = createInstants();
-
-    private static Instant[] createInstants() {
-        Instant loInstant = Instant.EPOCH;
-        Instant hiInstant = Instant.parse("2021-10-25T19:50:00Z");
-        long maxOffsetNanos = Duration.between(loInstant, hiInstant).toNanos();
-        Random random = new Random(0);
-        return IntStream
-                .range(0, 1_000)
-                .mapToObj(ignored -> {
-                    long offsetNanos = random.nextLong(maxOffsetNanos);
-                    return loInstant.plus(offsetNanos, ChronoUnit.NANOS);
-                })
-                .toArray(Instant[]::new);
-    }
+    private static final int INSTANT_COUNT = 1_000;
 
     /**
      * Date & time format patterns supported by all formatters and produce the same output.
@@ -72,74 +51,173 @@ public class FormatterBenchmark {
     })
     public String pattern;
 
-    Formatter log4jFdf;
+    @Param({
+            "shuffled",     // raw speed
+            "monoincr"      // to exploit implicit caching
+    })
+    public String timeFlow;
 
-    Formatter commonsFdf;
+    private Formatter log4jFdf;
 
-    Formatter javaDtf;
+    private Formatter commonsFdf;
+
+    private Formatter javaDtf;
 
     @Setup
-    public void setupFormatters(BenchmarkParams params) {
-        String pattern = params.getParam("pattern");
-        log4jFdf = Log4jFixedDateFormatFactory.INSTANCE.create(TIME_ZONE, LOCALE, INSTANTS, pattern);
-        commonsFdf = CommonsFastDateFormatFactory.INSTANCE.create(TIME_ZONE, LOCALE, INSTANTS, pattern);
-        javaDtf = JavaDateTimeFormatterFactory.INSTANCE.create(TIME_ZONE, LOCALE, INSTANTS, pattern);
+    public void setupFormatters(final BenchmarkParams params) {
+        final String pattern = params.getParam("pattern");
+        final String timeFlow = params.getParam("timeFlow");
+        final Instant[] instants = createInstants(timeFlow);
+        log4jFdf = new Log4jFixedDateFormat(instants, pattern);
+        commonsFdf = new CommonsFastDateFormat(instants, pattern);
+        javaDtf = new JavaDateTimeFormatter(instants, pattern);
+    }
+
+    private static Instant[] createInstants(final String timeFlow) {
+        if ("shuffled".equalsIgnoreCase(timeFlow)) {
+            return createShuffledInstants();
+        } else if ("monoincr".equalsIgnoreCase(timeFlow)) {
+            return createMonotonicallyIncreasingInstants();
+        }
+        throw new IllegalArgumentException("unknown instant collection pattern: " + timeFlow);
+    }
+
+    private static Instant[] createShuffledInstants() {
+        final Instant loInstant = Instant.EPOCH;
+        final Instant hiInstant = loInstant.plus(Duration.ofDays(1));           // This is necessary to avoid choking at `FixedDateTime#millisSinceMidnight(long)`, which is supposed to be executed once a day in practice.
+        final long maxOffsetNanos = Duration.between(loInstant, hiInstant).toNanos();
+        final Random random = new Random(0);
+        return IntStream
+                .range(0, INSTANT_COUNT)
+                .mapToObj(ignored -> {
+                    final long offsetNanos = (long) Math.floor(random.nextDouble() * maxOffsetNanos);
+                    return loInstant.plus(offsetNanos, ChronoUnit.NANOS);
+                })
+                .toArray(Instant[]::new);
+    }
+
+    private static Instant[] createMonotonicallyIncreasingInstants() {
+        Random random = new Random(0);
+        Instant[] instants = new Instant[INSTANT_COUNT];
+        instants[0] = Instant.EPOCH;
+        for (int instantIndex = 1; instantIndex < INSTANT_COUNT; instantIndex++) {
+            boolean repeating = random.nextDouble() < 0.3D;                     // 30% of the instants supposed to be repeating.
+            long offsetNanos = !repeating
+                    ? ((long) Math.floor(random.nextDouble() * 1e9))            // Max. 1 seconds between adjacent and distinct instants.
+                                                                                // This is necessary to avoid choking at `FixedDateTime#millisSinceMidnight(long)`, which is supposed to be executed once a day in practice.
+                    : 0;
+            instants[instantIndex] = instants[instantIndex - 1].plus(offsetNanos, ChronoUnit.NANOS);
+        }
+        return instants;
+    }
+
+    @FunctionalInterface
+    interface Formatter {
+
+        void benchmark(Blackhole blackhole);
+
+    }
+
+    private static final class Log4jFixedDateFormat implements Formatter {
+
+        private final org.apache.logging.log4j.core.time.Instant[] log4jInstants;
+
+        private final char[] buffer;
+
+        private final FixedDateFormat formatter;
+
+        private Log4jFixedDateFormat(final Instant[] instants, final String pattern) {
+            this.log4jInstants = Stream
+                    .of(instants)
+                    .map(instant -> {
+                        final MutableInstant log4jInstant = new MutableInstant();
+                        log4jInstant.initFromEpochSecond(instant.getEpochSecond(), instant.getNano());
+                        return log4jInstant;
+                    })
+                    .toArray(org.apache.logging.log4j.core.time.Instant[]::new);
+            this.buffer = new char[pattern.length()];
+            this.formatter = Objects.requireNonNull(FixedDateFormat.createIfSupported(pattern, TIME_ZONE.getID()));
+        }
+
+        @Override
+        public void benchmark(final Blackhole blackhole) {
+            for (final org.apache.logging.log4j.core.time.Instant log4jInstant : log4jInstants) {
+                blackhole.consume(formatter.formatInstant(log4jInstant, buffer, 0));
+            }
+        }
+
+    }
+
+    private static final class CommonsFastDateFormat implements Formatter {
+
+        private final Calendar[] calendars;
+
+        private final StringBuilder stringBuilder = new StringBuilder();
+
+        private final FastDateFormat fastDateFormat;
+
+        private CommonsFastDateFormat(final Instant[] instants, final String pattern) {
+            this.calendars = Arrays
+                    .stream(instants)
+                    .map(instant -> {
+                        final Calendar calendar = Calendar.getInstance(TIME_ZONE, LOCALE);
+                        calendar.setTimeInMillis(instant.toEpochMilli());
+                        return calendar;
+                    })
+                    .toArray(Calendar[]::new);
+            this.fastDateFormat = FastDateFormat.getInstance(pattern, TIME_ZONE, LOCALE);
+        }
+
+        @Override
+        public void benchmark(final Blackhole blackhole) {
+            for (final Calendar calendar : calendars) {
+                stringBuilder.setLength(0);
+                fastDateFormat.format(calendar, stringBuilder);
+                blackhole.consume(stringBuilder.length());
+            }
+        }
+
+    }
+
+    private static final class JavaDateTimeFormatter implements Formatter {
+
+        private final Instant[] instants;
+
+        private final StringBuilder stringBuilder = new StringBuilder();
+
+        private final DateTimeFormatter dateTimeFormatter;
+
+        private JavaDateTimeFormatter(final Instant[] instants, final String pattern) {
+            this.instants = instants;
+            this.dateTimeFormatter = DateTimeFormatter
+                    .ofPattern(pattern, LOCALE)
+                    .withZone(TIME_ZONE.toZoneId());
+        }
+
+        @Override
+        public void benchmark(final Blackhole blackhole) {
+            for (final Instant instant : instants) {
+                stringBuilder.setLength(0);
+                dateTimeFormatter.formatTo(instant, stringBuilder);
+                blackhole.consume(stringBuilder.length());
+            }
+        }
+
     }
 
     @Benchmark
-    public void log4jFdf(Blackhole blackhole) {
+    public void log4jFdf(final Blackhole blackhole) {
         log4jFdf.benchmark(blackhole);
     }
 
     @Benchmark
-    public void commonsFdf(Blackhole blackhole) {
+    public void commonsFdf(final Blackhole blackhole) {
         commonsFdf.benchmark(blackhole);
     }
 
     @Benchmark
-    public void javaDtf(Blackhole blackhole) {
+    public void javaDtf(final Blackhole blackhole) {
         javaDtf.benchmark(blackhole);
-    }
-
-    public static void main(String[] args) throws RunnerException {
-        fixJavaClassPath();
-        ChainedOptionsBuilder optionsBuilder = new OptionsBuilder()
-                .include(FormatterBenchmark.class.getSimpleName())
-                .warmupTime(TimeValue.seconds(20))
-                .warmupIterations(3)
-                .measurementTime(TimeValue.seconds(30))
-                .measurementIterations(4)
-                .forks(3);
-        configJmhQuickRun(optionsBuilder);
-        Options options = optionsBuilder.build();
-        new Runner(options).run();
-    }
-
-    /**
-     * Add project dependencies to <code>java.class.path</code> property used by JMH.
-     *
-     * @see <a href="https://stackoverflow.com/q/35574688/1278899">How to Run a JMH Benchmark in Maven Using exec:java Instead of exec:exec</a>
-     */
-    private static void fixJavaClassPath() {
-        URLClassLoader classLoader = (URLClassLoader) FormatterBenchmark.class.getClassLoader();
-        StringBuilder classpathBuilder = new StringBuilder();
-        for (URL url : classLoader.getURLs()) {
-            String urlPath = url.getPath();
-            classpathBuilder.append(urlPath).append(File.pathSeparator);
-        }
-        String classpath = classpathBuilder.toString();
-        System.setProperty("java.class.path", classpath);
-    }
-
-    private static void configJmhQuickRun(ChainedOptionsBuilder optionsBuilder) {
-        String quick = System.getProperty("benchmark.quick");
-        if (quick != null) {
-            optionsBuilder
-                    .forks(0)
-                    .warmupIterations(0)
-                    .measurementIterations(1)
-                    .measurementTime(TimeValue.seconds(3));
-        }
     }
 
 }

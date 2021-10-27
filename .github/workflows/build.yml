@@ -57,17 +57,9 @@ jobs:
             -DskipTests=true \
             package
 
-      - name: Verify
-        shell: bash
-        run: |
-          ./mvnw \
-            --show-version --batch-mode --errors --no-transfer-progress \
-            verify
-
       - name: Benchmark
         shell: bash
         run: |
-          ./mvnw \
-            --show-version --batch-mode --errors --no-transfer-progress \
-            -Dexec.mainClass=com.vlkan.FormatterBenchmark \
-            exec:java
+          java \
+            -jar target/date-time-format-benchmark.jar \
+            -wi 3 -w 10s -i 4 -r 10s -prof gc

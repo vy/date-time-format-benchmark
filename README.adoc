@@ -25,21 +25,14 @@ Even though all the benchmarked formatters are compatible with Java 8, Java 17 o
 +
 [source,bash]
 ----
-./mvnw clean verify
-----
-
-. Verify benchmarks:
-+
-[source,bash]
-----
-./mvnw -Dbenchmark.quick -Dexec.mainClass=com.vlkan.FormatterBenchmark exec:java
+./mvnw clean package
 ----
 
 . Run benchmarks:
 +
 [source,bash]
 ----
-./mvnw -Dexec.mainClass=com.vlkan.FormatterBenchmark exec:java
+java -jar target/date-time-format-benchmark.jar -f 0 -wi 0 -i 1 -r 10s
 ----
 
 For samples, see https://github.com/vy/date-time-format-benchmark/actions[earlier runs performed by CI].
