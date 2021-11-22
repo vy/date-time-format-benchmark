@@ -70,7 +70,7 @@ limitations under the License.
         <jmh.version>1.33</jmh.version>
         <junit.version>5.8.1</junit.version>
         <log4j.version>2.14.1</log4j.version>
-        <mockito.version>4.0.0</mockito.version>
+        <mockito.version>4.1.0</mockito.version>
 
         <!-- plugin versions -->
         <maven-compiler-plugin.version>3.8.1</maven-compiler-plugin.version>
